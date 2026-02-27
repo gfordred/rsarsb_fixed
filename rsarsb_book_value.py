@@ -107,8 +107,50 @@ def _calculate_fixed_rate_metrics(
         if not coupon_dates or coupon_dates[-1] < maturity_date:
             coupon_dates.append(maturity_date)
 
+        # Check if first coupon date is in same month/period as start date
+        # If so, skip it and defer interest to next payment
+        deferred_interest = 0
+        skip_first_payment = False
+        
+        if coupon_dates and interest_payment_type in ['monthly', 'semi_annual']:
+            first_coupon = coupon_dates[0]
+            
+            if interest_payment_type == 'monthly':
+                # Same month if year and month match
+                if first_coupon.year == start_date.year and first_coupon.month == start_date.month:
+                    skip_first_payment = True
+                    # Calculate deferred interest for this period
+                    days_in_period = (first_coupon - start_date).days
+                    deferred_interest = current_principal * rate * days_in_period / 365
+            elif interest_payment_type == 'semi_annual':
+                # Same period if both dates fall in same semi-annual period
+                # Mar 31 period: Oct 1 - Mar 31
+                # Sep 30 period: Apr 1 - Sep 30
+                start_period = 'Mar' if 1 <= start_date.month <= 3 or start_date.month >= 10 else 'Sep'
+                first_coupon_period = 'Mar' if first_coupon.month == 3 else 'Sep'
+                
+                # Check if in same semi-annual period
+                if start_period == first_coupon_period:
+                    if start_period == 'Mar' and start_date.month >= 10:
+                        # Oct-Dec of previous year to Mar of current year
+                        if first_coupon.year == start_date.year or (first_coupon.year == start_date.year + 1 and first_coupon.month == 3):
+                            skip_first_payment = True
+                            days_in_period = (first_coupon - start_date).days
+                            deferred_interest = current_principal * rate * days_in_period / 365
+                    elif start_period == 'Sep' and 4 <= start_date.month <= 9:
+                        # Apr-Sep of same year
+                        if first_coupon.year == start_date.year and first_coupon.month == 9:
+                            skip_first_payment = True
+                            days_in_period = (first_coupon - start_date).days
+                            deferred_interest = current_principal * rate * days_in_period / 365
+
         last_coupon_dt = start_date
-        for coupon_dt in coupon_dates:
+        for idx, coupon_dt in enumerate(coupon_dates):
+            # Skip first payment if in same month/period
+            if idx == 0 and skip_first_payment:
+                last_coupon_dt = coupon_dt
+                continue
+                
             days_in_period = (coupon_dt - last_coupon_dt).days
             coupon_amount = 0
 
@@ -126,6 +168,10 @@ def _calculate_fixed_rate_metrics(
                 # Stub period
                 else:
                     coupon_amount = current_principal * rate * days_in_period / 365
+
+            # Add deferred interest to second payment (first actual payment)
+            if idx == 1 and skip_first_payment and deferred_interest > 0:
+                coupon_amount += deferred_interest
 
             # For reinvestment bonds, the coupon is not a cash flow but a capitalisation event.
             # We'll record it with a different type to distinguish it from actual cash flows.
